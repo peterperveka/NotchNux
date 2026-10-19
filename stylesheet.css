@@ -961,6 +961,46 @@
     spacing: 8px;
 }
 
+/* Horizontal spacing inside one grid row — without it the four tiles sat
+   flush against each other ("spracané na kope"). */
+.nook-toggle-row {
+    spacing: 8px;
+}
+
+/* Inner row of a clickable device row — mirrors the plain row's 9px spacing
+   so icon/label columns line up across button and non-button rows. */
+.nook-device-row-inner {
+    spacing: 9px;
+}
+
+/* Compact stat tile (CPU/RAM/SWAP/DISK/NET): icon + value + label, no ring. */
+.nook-stat-tile {
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 9px 4px;
+    spacing: 4px;
+}
+.nook-stat-icon {
+    color: rgba(255, 255, 255, 0.45);
+}
+.nook-stat-value {
+    font-size: 13px;
+    font-weight: bold;
+    color: #f4f4f6;
+    text-align: center;
+}
+.nook-stat-sub {
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.6);
+    text-align: center;
+}
+.nook-stat-label {
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.5);
+    text-align: center;
+}
+
 .nook-toggle {
     width: 96px;
     height: 62px;

@@ -1718,27 +1718,23 @@ export const NotchNux = GObject.registerClass({
                 case 'shelf': this._renderShelfTab(); break;
                 case 'wallpaper': this._renderWallpaperTab(); break;
             }
-            // Re-fit to the new content height, unless expand() is driving its
-            // own open animation (it renders first, then animates size itself).
-            if (this.isExpanded && !this._isExpanding)
-                this._resizeToContent();
-            if (fade && this.isExpanded && !this._isExpanding &&
+            // Re-fit to the new content height AFTER the fresh actors have been
+            // through one layout pass — measuring synchronously right after the
+            // swap can return a pre-layout height that then corrected itself a
+            // frame later, which read as a second jump. Deferred + the
+            // unchanged-target guard in _resizeToContent keep one smooth motion.
+            if (this.isExpanded && !this._isExpanding &&
                 this._contentContainer.get_children().length > 0) {
-                // Interactive switch: fade the NEW content in over ~150ms
-                // while the box resizes in the same motion. Deliberately no
-                // fade-out of the old tab — dimming the old content to zero
-                // made the notch read as "closing and reopening" on every
-                // switch. The swap itself is invisible: the new content
-                // replaces the old in the same frame.
-                this._contentContainer.opacity = 0;
-                this._contentContainer.ease({
-                    opacity: 255, duration: 150,
-                    mode: Clutter.AnimationMode.EASE_OUT_QUAD });
-            } else {
-                // Background renders (config reload, expand, peek-triggered):
-                // show the content immediately, never leave it dimmed.
-                this._contentContainer.opacity = 255;
+                GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                    if (this.isExpanded && !this._isExpanding)
+                        this._resizeToContent();
+                    return GLib.SOURCE_REMOVE;
+                });
             }
+            // Show the new content immediately (no fade): the vanish-then-
+            // appear flash was itself part of the "jumping" feel. The resize
+            // animation below carries the motion.
+            this._contentContainer.opacity = 255;
         };
         renderNow();
     }
@@ -2419,66 +2415,25 @@ export const NotchNux = GObject.registerClass({
         // tile so the ↓/↑ rates get their own breathing room instead of being
         // crammed into the ring center.
         let mkMeter = (label, pct, icon, color = ACCENT, onScroll = null, displayText = null, subRates = null) => {
-            let t = new St.BoxLayout({ style_class: 'nook-meter-tile', vertical: true, x_expand: true, x_align: Clutter.ActorAlign.CENTER });
-            let ring = new RingMeter(44, color);
-            ring.setValue(pct / 100);
-
-            // Build the centered readout actor.
-            let readout;
-            let numLabel = null;
+            // Compact stat tile: icon + value + label. The old ring graphics
+            // are gone (Peter: "krúžky sú zbytočné") — the percentage itself
+            // carries the information.
+            let t = new St.BoxLayout({ style_class: 'nook-stat-tile', vertical: true, x_expand: true, x_align: Clutter.ActorAlign.CENTER });
+            t.add_child(new St.Icon({ icon_name: icon, icon_size: 14,
+                style_class: 'nook-stat-icon', x_align: Clutter.ActorAlign.CENTER }));
             if (Array.isArray(displayText)) {
-                // Each rate on its own line as a separate label; 2px gap between.
-                readout = new St.BoxLayout({ vertical: true, style_class: 'nook-meter-rates',
+                let readout = new St.BoxLayout({ vertical: true, style_class: 'nook-meter-rates',
                     x_align: Clutter.ActorAlign.CENTER });
                 for (let line of displayText)
                     readout.add_child(new St.Label({ text: line,
-                        style_class: 'nook-meter-num nook-meter-num-sm',
-                        x_align: Clutter.ActorAlign.CENTER }));
+                        style_class: 'nook-stat-sub', x_align: Clutter.ActorAlign.CENTER }));
+                t.add_child(readout);
             } else {
-                numLabel = new St.Label({ text: displayText !== null ? displayText : `${pct}%`, style_class: displayText !== null ? 'nook-meter-num nook-meter-num-sm' : 'nook-meter-num' });
-                readout = numLabel;
+                t.add_child(new St.Label({ text: displayText !== null ? displayText : `${pct}%`,
+                    style_class: 'nook-stat-value', x_align: Clutter.ActorAlign.CENTER }));
             }
-            let stack = new St.Widget({ layout_manager: new Clutter.BinLayout() });
-            stack.add_child(ring);
-            let numBin = new St.Bin({ x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER });
-            numBin.set_child(readout);
-            stack.add_child(numBin);
-
-            if (onScroll) {
-                // Wrap the ring in a reactive button so scrolling nudges the value.
-                let btn = new St.Button({ style_class: 'nook-meter-knob-btn', reactive: true, can_focus: false });
-                btn.set_child(stack);
-                btn.connect('scroll-event', (a, e) => {
-                    let dir = e.get_scroll_direction();
-                    let delta = (dir === Clutter.ScrollDirection.UP) ? 5 : (dir === Clutter.ScrollDirection.DOWN) ? -5 : 0;
-                    if (delta) {
-                        let v = onScroll(delta);
-                        if (v !== null && v !== undefined) {
-                            ring.setValue(v / 100);
-                            numLabel.set_text(`${v}%`);
-                        }
-                    }
-                    return Clutter.EVENT_STOP;
-                });
-                t.add_child(btn);
-            } else {
-                t.add_child(stack);
-            }
-
-            // Optional rates block below the ring (NET tile).
-            if (Array.isArray(subRates) && subRates.length) {
-                let sub = new St.BoxLayout({ vertical: true, style_class: 'nook-meter-subrates',
-                    x_align: Clutter.ActorAlign.CENTER });
-                for (let line of subRates)
-                    sub.add_child(new St.Label({ text: line, style_class: 'nook-meter-subrate',
-                        x_align: Clutter.ActorAlign.CENTER }));
-                t.add_child(sub);
-            }
-
-            let lbl = new St.BoxLayout({ style_class: 'nook-meter-label-row', x_align: Clutter.ActorAlign.CENTER });
-            lbl.add_child(new St.Icon({ icon_name: icon, icon_size: 13, y_align: Clutter.ActorAlign.CENTER }));
-            lbl.add_child(new St.Label({ text: label, y_align: Clutter.ActorAlign.CENTER }));
-            t.add_child(lbl);
+            t.add_child(new St.Label({ text: label,
+                style_class: 'nook-stat-label', x_align: Clutter.ActorAlign.CENTER }));
             return t;
         };
         meters.add_child(mkMeter('CPU', this._system.getCpuUsage(), 'system-run-symbolic'));
@@ -2504,16 +2459,8 @@ export const NotchNux = GObject.registerClass({
         let upTile = mkMeter('UP', upPct, 'go-up-symbolic', ACCENT, null, splitRate(upLabel));
         upTile.add_style_class_name('nook-meter-tile-net');
         meters.add_child(upTile);
-        // Brightness as an interactive knob-tile. When no backend reports a
-        // brightness value we show 0% but still allow scroll (which no-ops).
-        let bright = this._system.getBrightness();
-        meters.add_child(mkMeter('LIGHT', bright === null ? 0 : bright, 'display-brightness-symbolic', AMBER, (delta) => {
-            let cur = this._system.getBrightness();
-            if (cur === null) cur = 50;
-            let v = Math.max(0, Math.min(100, cur + delta));
-            this._system.setBrightness(v);
-            return v;
-        }));
+        // (Brightness moved out of the meters row — it lives in the toggle
+        // grid below as the Light tile.)
         panel.add_child(meters);
 
         // --- Lower row: devices card + quick-toggle grid ---
@@ -2583,9 +2530,7 @@ export const NotchNux = GObject.registerClass({
         addDev.connect('clicked', () => this._openBluetoothScanOverlay());
         devCard.add_child(addDev);
 
-        // devCard is added to the left column further down (stacked above WiFi)
-        // rather than straight into the lower row, so the two cards together
-        // fill the toggle cluster's height with no gap below "Add device…".
+        // devCard sits in the bottom row beside the WiFi card.
 
         // Quick toggles: one uniform grid of tiles (2 rows x 4) in the same
         // visual language as the meters above. Replaces the old plus-cluster
@@ -2626,9 +2571,9 @@ export const NotchNux = GObject.registerClass({
         };
 
         // Row 1: Sound · Light · Airplane · Focus
-        let row1 = new St.BoxLayout({ vertical: false, x_expand: true });
+        let row1 = new St.BoxLayout({ style_class: 'nook-toggle-row', vertical: false, x_expand: true });
         // Row 2: Shot · Lock · Caffeine · filler (keeps the 2x4 rhythm)
-        let row2 = new St.BoxLayout({ vertical: false, x_expand: true });
+        let row2 = new St.BoxLayout({ style_class: 'nook-toggle-row', vertical: false, x_expand: true });
 
         // Sound — click mutes/unmutes, scroll adjusts volume.
         let muted = this._system.isMuted;
@@ -2699,21 +2644,15 @@ export const NotchNux = GObject.registerClass({
         grid.add_child(row1);
         grid.add_child(row2);
 
-        // Two-column lower area: the left column stacks DEVICES over WIFI so
-        // together they fill the right column's height (toggle cluster + TOP
-        // BAR) with no dead space. The right column stacks the cluster over the
-        // mirrored top-bar row.
-        let leftCol = new St.BoxLayout({ style_class: 'nook-tray-leftcol', vertical: true, x_expand: true });
-        leftCol.add_child(devCard);
+        // New layout: meters row, then the toggle grid at FULL dashboard width
+        // (in a half column the 4 tiles were cramped into ~60px each), then
+        // DEVICES and WIFI side by side beneath.
+        panel.add_child(grid);
+
+        lower.add_child(devCard);
         let wifiCard = this._buildWifiCard();
         if (wifiCard)
-            leftCol.add_child(wifiCard);
-
-        let rightCol = new St.BoxLayout({ style_class: 'nook-tray-rightcol', vertical: true });
-        rightCol.add_child(grid);
-
-        lower.add_child(leftCol);
-        lower.add_child(rightCol);
+            lower.add_child(wifiCard);
         panel.add_child(lower);
 
         this._contentContainer.add_child(panel);
@@ -2794,7 +2733,7 @@ export const NotchNux = GObject.registerClass({
             ? new St.Button({ style_class: 'nook-device-row nook-device-row-btn', reactive: true, x_expand: true, can_focus: true })
             : new St.BoxLayout({ style_class: 'nook-device-row', vertical: false, x_expand: true });
         let inner = clickable
-            ? new St.BoxLayout({ vertical: false, x_expand: true })
+            ? new St.BoxLayout({ vertical: false, x_expand: true, style_class: 'nook-device-row-inner' })
             : row;
         inner.add_child(new St.Icon({ icon_name: d.icon, icon_size: 16, style_class: 'nook-device-icon', y_align: Clutter.ActorAlign.CENTER }));
         inner.add_child(new St.Label({ text: d.name, style_class: 'nook-device-name', x_expand: true, y_align: Clutter.ActorAlign.CENTER }));

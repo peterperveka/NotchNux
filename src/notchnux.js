@@ -769,11 +769,11 @@ export const NotchNux = GObject.registerClass({
             visible: false });
         this._notifBanner.add_child(this._notifPeekActions);
 
-        // Clicking the main area opens the full dashboard on the Alerts tab,
-        // so this notification can be read together with the rest of the
-        // queue (per-notification actions below still work directly).
+        // Clicking the main area activates the notification (opens the app /
+        // its default action), like a normal shell banner. Hovering expands
+        // the full text; doing nothing lets it auto-hide into the Alerts tab.
         this._notifPeekMain.connect('clicked', () => {
-            this._openNotificationsFromPeek();
+            this._activateCurrentNotification();
         });
 
         // Hovering anywhere on the banner pauses the auto-dismiss AND expands
@@ -5703,35 +5703,14 @@ export const NotchNux = GObject.registerClass({
         // dashboard are always left to propagate to their controls — the
         // dashboard never collapses from an internal click.
         if (event.get_button() === 1 && !this.isExpanded) {
-            // While a peek is up, a click on the notch means "show me the
-            // alerts" — open straight onto the Alerts tab instead of whatever
-            // tab was active before the notification arrived.
+            // While a peek is up, a click on the notch counts as clicking the
+            // alert: activate the notification (open the app) and dismiss.
             if (this._peekActive)
-                this._openNotificationsFromPeek();
+                this._activateCurrentNotification();
             else
                 this.expand();
         }
         return Clutter.EVENT_PROPAGATE;
-    }
-
-    // Open the full dashboard on the Alerts tab, dismissing the peek. Used by
-    // both the peek banner's main area and a click on the pill during a peek.
-    _openNotificationsFromPeek() {
-        if (this._tabs.notifications && this._activeTab !== 'notifications') {
-            // Set the tab without the animated switch — expand() renders the
-            // fresh tab itself; a queued crossfade here would land after the
-            // expand render and re-swap the content mid-animation.
-            if (this._tabButtons[this._activeTab]) {
-                this._tabButtons[this._activeTab].remove_style_class_name('notchnux-tab-btn-active');
-                this._tabButtons[this._activeTab].set_style(null);
-            }
-            this._activeTab = 'notifications';
-            if (this._tabButtons[this._activeTab]) {
-                this._tabButtons[this._activeTab].add_style_class_name('notchnux-tab-btn-active');
-                this._tabButtons[this._activeTab].set_style(this._accentTabActiveStyle ?? null);
-            }
-        }
-        this.expand();
     }
 
     _onStageClicked(event) {

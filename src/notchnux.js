@@ -525,6 +525,12 @@ export const NotchNux = GObject.registerClass({
         let monitor = Main.layoutManager.primaryMonitor;
         if (!monitor) return;
         let targetHeight = this._measureDashboardHeight();
+        // Skip no-op re-eases: event-driven refreshes (WiFi state, tray
+        // toggles, notification changes) re-render and call this repeatedly;
+        // re-animating to the same height each time read as constant jitter.
+        // A genuinely changed height still animates.
+        if (this._lastResizeTarget === targetHeight) return;
+        this._lastResizeTarget = targetHeight;
         let targetX = monitor.x + Math.floor((monitor.width - DASHBOARD_WIDTH) / 2);
         this.ease({
             x: targetX, y: monitor.y, width: DASHBOARD_WIDTH, height: targetHeight,
@@ -763,10 +769,11 @@ export const NotchNux = GObject.registerClass({
             visible: false });
         this._notifBanner.add_child(this._notifPeekActions);
 
-        // Clicking the main area = activate the notification (its default
-        // action) and dismiss the peek.
+        // Clicking the main area opens the full dashboard on the Alerts tab,
+        // so this notification can be read together with the rest of the
+        // queue (per-notification actions below still work directly).
         this._notifPeekMain.connect('clicked', () => {
-            this._activateCurrentNotification();
+            this._openNotificationsFromPeek();
         });
 
         // Hovering anywhere on the banner pauses the auto-dismiss AND expands
@@ -1714,26 +1721,25 @@ export const NotchNux = GObject.registerClass({
             // own open animation (it renders first, then animates size itself).
             if (this.isExpanded && !this._isExpanding)
                 this._resizeToContent();
-            // Bring the fresh content back in — paired with the quick fade-out
-            // below this turns the hard content swap into a soft crossfade, so
-            // a tab switch reads as one motion with the resize instead of an
-            // instant swap followed by a jump.
-            this._contentContainer.ease({
-                opacity: 255, duration: 170,
-                mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            if (fade && this.isExpanded && !this._isExpanding &&
+                this._contentContainer.get_children().length > 0) {
+                // Interactive switch: fade the NEW content in over ~150ms
+                // while the box resizes in the same motion. Deliberately no
+                // fade-out of the old tab — dimming the old content to zero
+                // made the notch read as "closing and reopening" on every
+                // switch. The swap itself is invisible: the new content
+                // replaces the old in the same frame.
+                this._contentContainer.opacity = 0;
+                this._contentContainer.ease({
+                    opacity: 255, duration: 150,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            } else {
+                // Background renders (config reload, expand, peek-triggered):
+                // show the content immediately, never leave it dimmed.
+                this._contentContainer.opacity = 255;
+            }
         };
-        // Crossfade path: fade the outgoing tab out quickly, then swap and
-        // fade the new one in. Only used for interactive tab switches — other
-        // callers (config reload, expand) render immediately.
-        if (fade && this.isExpanded && !this._isExpanding &&
-            this._contentContainer.get_children().length > 0) {
-            this._contentContainer.ease({
-                opacity: 0, duration: 90,
-                mode: Clutter.AnimationMode.EASE_IN_QUAD,
-                onComplete: () => renderNow() });
-        } else {
-            renderNow();
-        }
+        renderNow();
     }
 
     // Halt vinyl spin + EQ bounce and drop the references, so nothing keeps
@@ -5641,6 +5647,14 @@ export const NotchNux = GObject.registerClass({
         this._pointerInside = entering;
 
         if (entering) {
+            // While a notification peek is showing, hovering the notch pauses
+            // the peek's auto-dismiss and keeps the alert on screen — the alert
+            // is what the user pointed at, so do NOT hijack it into the full
+            // dashboard. Leaving the widget resumes the countdown.
+            if (this._peekActive) {
+                this._clearPeekDismissTimer();
+                return Clutter.EVENT_PROPAGATE;
+            }
             // Cancel any pending collapse and (if collapsed) schedule expand.
             if (this._collapseTimeoutId) {
                 GLib.Source.remove(this._collapseTimeoutId);
@@ -5655,6 +5669,13 @@ export const NotchNux = GObject.registerClass({
                 });
             }
         } else {
+            // Peek still up: pointer truly left the notch — fold the full text
+            // back and restart the auto-dismiss countdown.
+            if (this._peekActive) {
+                this._setPeekFullText(false);
+                this._armPeekDismissTimer();
+                return Clutter.EVENT_PROPAGATE;
+            }
             // Pointer truly left the widget: cancel pending expand, and if
             // open, schedule a collapse (generous delay for cursor travel).
             if (this._expandTimeoutId) {
@@ -5681,9 +5702,36 @@ export const NotchNux = GObject.registerClass({
         // Clicking the collapsed pill opens it. Clicks inside the expanded
         // dashboard are always left to propagate to their controls — the
         // dashboard never collapses from an internal click.
-        if (event.get_button() === 1 && !this.isExpanded)
-            this.expand();
+        if (event.get_button() === 1 && !this.isExpanded) {
+            // While a peek is up, a click on the notch means "show me the
+            // alerts" — open straight onto the Alerts tab instead of whatever
+            // tab was active before the notification arrived.
+            if (this._peekActive)
+                this._openNotificationsFromPeek();
+            else
+                this.expand();
+        }
         return Clutter.EVENT_PROPAGATE;
+    }
+
+    // Open the full dashboard on the Alerts tab, dismissing the peek. Used by
+    // both the peek banner's main area and a click on the pill during a peek.
+    _openNotificationsFromPeek() {
+        if (this._tabs.notifications && this._activeTab !== 'notifications') {
+            // Set the tab without the animated switch — expand() renders the
+            // fresh tab itself; a queued crossfade here would land after the
+            // expand render and re-swap the content mid-animation.
+            if (this._tabButtons[this._activeTab]) {
+                this._tabButtons[this._activeTab].remove_style_class_name('notchnux-tab-btn-active');
+                this._tabButtons[this._activeTab].set_style(null);
+            }
+            this._activeTab = 'notifications';
+            if (this._tabButtons[this._activeTab]) {
+                this._tabButtons[this._activeTab].add_style_class_name('notchnux-tab-btn-active');
+                this._tabButtons[this._activeTab].set_style(this._accentTabActiveStyle ?? null);
+            }
+        }
+        this.expand();
     }
 
     _onStageClicked(event) {
@@ -5857,6 +5905,7 @@ export const NotchNux = GObject.registerClass({
     collapse() {
         if (!this.isExpanded) return;
         this.isExpanded = false;
+        this._lastResizeTarget = null;
         this._closeScanOverlay();
         this._stopMediaAnimations();
         this._stopSystemRefresh();

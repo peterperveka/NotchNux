@@ -472,8 +472,8 @@
     background-color: rgba(255, 255, 255, 0.05);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 14px;
-    padding: 12px 4px;
-    spacing: 8px;
+    padding: 8px 4px;
+    spacing: 6px;
 }
 
 /* Network tiles (DOWN / UP): each shows a rate split value+unit in the ring,
@@ -496,7 +496,7 @@
 }
 
 .nook-meter-num {
-    font-size: 13px;
+    font-size: 11px;
     font-weight: bold;
     color: #f4f4f6;
 }
@@ -514,7 +514,7 @@
     spacing: 1px;
 }
 .nook-meter-rates .nook-meter-num-sm {
-    font-size: 11px;
+    font-size: 9px;
     line-height: 1.1;
 }
 
@@ -626,6 +626,11 @@
 
 .nook-device-row {
     spacing: 9px;
+    /* Match the button variant's padding so plain rows (This device, "No
+     * wireless devices") line up exactly with clickable Bluetooth rows —
+     * the misalignment Peter saw (mouse row slightly offset/smaller). */
+    padding: 3px 6px;
+    margin: 0 -6px;
 }
 
 /* Paired Bluetooth rows are buttons: give them a padded, hover-highlighted
@@ -975,6 +980,38 @@
     background-color: rgba(122, 162, 255, 0.16);
     border: 1px solid rgba(122, 162, 255, 0.4);
     color: #eaf0ff;
+}
+
+/* ---- Uniform quick-toggle tile (2x4 grid) ----
+ * Equal rectangles in the same visual language as the old toggle arms, laid
+ * out in a tidy grid instead of the plus-cluster. */
+.nook-tile {
+    height: 64px;
+    padding: 10px 8px;
+    border-radius: 14px;
+    background-color: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    color: rgba(255, 255, 255, 0.7);
+    transition: all 150ms ease-out;
+}
+.nook-tile:hover {
+    background-color: rgba(255, 255, 255, 0.09);
+}
+.nook-tile-on {
+    background-color: rgba(122, 162, 255, 0.16);
+    border: 1px solid rgba(122, 162, 255, 0.4);
+    color: #eaf0ff;
+}
+.nook-tile-on .nook-toggle-icon {
+    color: #a7bfff;
+}
+/* Inert filler that keeps the grid rectangular. */
+.nook-tile-filler {
+    background-color: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+}
+.nook-tile-filler:hover {
+    background-color: rgba(255, 255, 255, 0.02);
 }
 
 .nook-toggle-icon {

@@ -76,6 +76,7 @@ export const NotchNux = GObject.registerClass({
         setAccent(this._config.accentRgb);
         this.isExpanded = false;
         this._isExpanding = false;
+        this._caffeineCookie = null;   // GNOME SessionManager inhibit handle
         this._pointerInside = false;
         this._activeTab = 'media';
         this._selectedCalendarDate = new Date();
@@ -2419,7 +2420,7 @@ export const NotchNux = GObject.registerClass({
         // crammed into the ring center.
         let mkMeter = (label, pct, icon, color = ACCENT, onScroll = null, displayText = null, subRates = null) => {
             let t = new St.BoxLayout({ style_class: 'nook-meter-tile', vertical: true, x_expand: true, x_align: Clutter.ActorAlign.CENTER });
-            let ring = new RingMeter(58, color);
+            let ring = new RingMeter(44, color);
             ring.setValue(pct / 100);
 
             // Build the centered readout actor.
@@ -2586,35 +2587,20 @@ export const NotchNux = GObject.registerClass({
         // rather than straight into the lower row, so the two cards together
         // fill the toggle cluster's height with no gap below "Add device…".
 
-        // Quick-toggles arranged in a plus around a central circular airplane
-        // button. Each arm is a rounded tile whose center-facing corners are
-        // heavily rounded, so the circle nestles into the cavity between them.
+        // Quick toggles: one uniform grid of tiles (2 rows x 4) in the same
+        // visual language as the meters above. Replaces the old plus-cluster
+        // (uneven arms + center circle) — Peter asked for equal simple tiles
+        // that fill the space cleanly.
         let dndSettings = new Gio.Settings({ schema_id: 'org.gnome.desktop.notifications' });
         let isDnd = !dndSettings.get_boolean('show-banners');
 
-        // Cluster geometry (px). Arms sit N/E/S/W; the circle overlaps them.
-        const ARM_W = 96, ARM_H = 58;          // arm tile size (horizontal arms)
-        const V_ARM_W = 58, V_ARM_H = 96;      // vertical arm tile size
-        const CIRCLE = 72;                     // center circle diameter
-        // Gap kept between each arm's inner edge and the circle so the tiles
-        // don't cut into it.
-        const GAP = 6;
-        // Footprint sized so the circle sits centred with an arm + gap on each
-        // side: horizontal = V_ARM_W + GAP + CIRCLE + GAP + V_ARM_W, and the
-        // vertical run of arm + gap + circle + gap + arm.
-        const CL_W = V_ARM_W + GAP + CIRCLE + GAP + V_ARM_W;   // 200
-        const CL_H = ARM_H + GAP + CIRCLE + GAP + ARM_H;       // 200
-        const cx = CL_W / 2, cy = CL_H / 2;
-
-        let cluster = new St.Widget({ style_class: 'nook-cluster', layout_manager: new Clutter.FixedLayout() });
-        cluster.set_size(CL_W, CL_H);
-
-        let mkArm = (icon, name, sub, active, corner, cb) => {
-            let cls = 'nook-toggle nook-arm nook-arm-' + corner + (active ? ' nook-toggle-on' : '');
-            let b = new St.Button({ style_class: cls, reactive: true, x_expand: true });
+        let mkTile = (icon, name, sub, active, onClick, onScroll = null) => {
+            let b = new St.Button({
+                style_class: 'nook-tile' + (active ? ' nook-tile-on' : ''),
+                reactive: true, x_expand: true, can_focus: true });
             let col = new St.BoxLayout({ vertical: true, x_expand: true,
                 x_align: Clutter.ActorAlign.CENTER });
-            col.add_child(new St.Icon({ icon_name: icon, icon_size: 18,
+            col.add_child(new St.Icon({ icon_name: icon, icon_size: 16,
                 style_class: 'nook-toggle-icon', x_align: Clutter.ActorAlign.CENTER }));
             let txt = new St.BoxLayout({ vertical: true, style_class: 'nook-toggle-text',
                 x_expand: true, x_align: Clutter.ActorAlign.CENTER });
@@ -2624,63 +2610,94 @@ export const NotchNux = GObject.registerClass({
                 x_align: Clutter.ActorAlign.CENTER, x_expand: true }));
             col.add_child(txt);
             b.set_child(col);
-            if (cb) b.connect('clicked', cb);
+            if (onScroll) {
+                // Scrolling on a tile nudges its value (volume, brightness) —
+                // same knob behaviour the old LIGHT meter tile had.
+                b.connect('scroll-event', (a, e) => {
+                    let dir = e.get_scroll_direction();
+                    let delta = (dir === Clutter.ScrollDirection.UP) ? 5 :
+                                (dir === Clutter.ScrollDirection.DOWN) ? -5 : 0;
+                    if (delta) onScroll(delta);
+                    return Clutter.EVENT_STOP;
+                });
+            }
+            if (onClick) b.connect('clicked', onClick);
             return b;
         };
 
-        // Inner edge of each arm, offset from the circle so tiles never overlap it.
-        const halfC = CIRCLE / 2;
+        // Row 1: Sound · Light · Airplane · Focus
+        let row1 = new St.BoxLayout({ vertical: false, x_expand: true });
+        // Row 2: Shot · Lock · Caffeine · filler (keeps the 2x4 rhythm)
+        let row2 = new St.BoxLayout({ vertical: false, x_expand: true });
 
+        // Sound — click mutes/unmutes, scroll adjusts volume.
         let muted = this._system.isMuted;
-        // TOP arm — Sound (cavity on its bottom edge).
-        let top = mkArm(muted ? 'audio-volume-muted-symbolic' : 'audio-volume-high-symbolic',
-            muted ? 'Muted' : 'Sound', muted ? 'Off' : `${this._system.volume}%`, muted, 'top', () => {
-            this._system.setMuted(!this._system.isMuted); this._renderActiveTab();
-        });
-        top.set_size(ARM_W, ARM_H);
-        top.set_position(Math.round(cx - ARM_W / 2), Math.round(cy - halfC - GAP - ARM_H));
+        row1.add_child(mkTile(
+            muted ? 'audio-volume-muted-symbolic' : 'audio-volume-high-symbolic',
+            'Sound', muted ? 'Off' : `${this._system.volume}%`, muted,
+            () => { this._system.setMuted(!this._system.isMuted); this._renderActiveTab(); },
+            (delta) => {
+                let v = Math.max(0, Math.min(100, this._system.volume + delta));
+                this._system.setVolume(v);
+                this._renderActiveTab();
+            }));
 
-        // BOTTOM arm — Focus (cavity on its top edge).
-        let bottom = mkArm(isDnd ? 'notifications-disabled-symbolic' : 'preferences-system-notifications-symbolic',
-            'Focus', isDnd ? 'On' : 'Off', isDnd, 'bottom', () => {
-            dndSettings.set_boolean('show-banners', isDnd); this._renderActiveTab();
-        });
-        bottom.set_size(ARM_W, ARM_H);
-        bottom.set_position(Math.round(cx - ARM_W / 2), Math.round(cy + halfC + GAP));
+        // Light (brightness) — scroll adjusts, like the old LIGHT meter knob.
+        let brightNow = this._system.getBrightness();
+        row1.add_child(mkTile('display-brightness-symbolic', 'Light',
+            brightNow === null ? 'N/A' : `${brightNow}%`, false, null, (delta) => {
+                let cur = this._system.getBrightness();
+                if (cur === null) return;
+                let v = Math.max(0, Math.min(100, cur + delta));
+                this._system.setBrightness(v);
+                this._renderActiveTab();
+            }));
 
-        // LEFT arm — Screenshot (cavity on its right edge).
-        let left = mkArm('accessories-screenshot-symbolic', 'Shot', 'Capture', false, 'left', () => {
-            this._collapseImmediately(); Main.screenshotUI.open();
-        });
-        left.set_size(V_ARM_W, V_ARM_H);
-        left.set_position(Math.round(cx - halfC - GAP - V_ARM_W), Math.round(cy - V_ARM_H / 2));
-
-        // RIGHT arm — Lock (cavity on its left edge).
-        let right = mkArm('preferences-desktop-screensaver-symbolic', 'Lock', 'Screen', false, 'right', () => {
-            this._collapseImmediately(); Main.screenShield.lock(true);
-        });
-        right.set_size(V_ARM_W, V_ARM_H);
-        right.set_position(Math.round(cx + halfC + GAP), Math.round(cy - V_ARM_H / 2));
-
-        // CENTER — circular airplane-mode toggle, on top of the arms.
+        // Airplane — straight toggle.
         let airOn = this._system.getAirplaneMode();
-        let center = new St.Button({ style_class: 'nook-air-btn' + (airOn ? ' nook-air-on' : ''), reactive: true });
-        center.set_size(CIRCLE, CIRCLE);
-        center.set_position(Math.round(cx - CIRCLE / 2), Math.round(cy - CIRCLE / 2));
-        let airCol = new St.BoxLayout({ vertical: true, x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.CENTER });
-        airCol.add_child(new St.Icon({ icon_name: 'airplane-mode-symbolic', icon_size: 22, style_class: 'nook-air-icon', x_align: Clutter.ActorAlign.CENTER }));
-        airCol.add_child(new St.Label({ text: airOn ? 'On' : 'Off', style_class: 'nook-air-sub', x_align: Clutter.ActorAlign.CENTER }));
-        center.set_child(airCol);
-        center.connect('clicked', () => {
-            this._system.setAirplaneMode(!this._system.getAirplaneMode());
-            this._renderActiveTab();
-        });
+        row1.add_child(mkTile('airplane-mode-symbolic', 'Airplane',
+            airOn ? 'On' : 'Off', airOn, () => {
+                this._system.setAirplaneMode(!this._system.getAirplaneMode());
+                this._renderActiveTab();
+            }));
 
-        cluster.add_child(top);
-        cluster.add_child(bottom);
-        cluster.add_child(left);
-        cluster.add_child(right);
-        cluster.add_child(center);
+        // Focus (Do Not Disturb).
+        row1.add_child(mkTile(
+            isDnd ? 'notifications-disabled-symbolic' : 'preferences-system-notifications-symbolic',
+            'Focus', isDnd ? 'On' : 'Off', isDnd, () => {
+                dndSettings.set_boolean('show-banners', isDnd);
+                this._renderActiveTab();
+            }));
+
+        // Screenshot — opens GNOME's own screenshot UI.
+        row2.add_child(mkTile('accessories-screenshot-symbolic', 'Shot', 'Capture', false, () => {
+            this._collapseImmediately(); Main.screenshotUI.open();
+        }));
+
+        // Lock screen.
+        row2.add_child(mkTile('preferences-desktop-screensaver-symbolic', 'Lock', 'Screen', false, () => {
+            this._collapseImmediately(); Main.screenShield.lock(true);
+        }));
+
+        // Caffeine — native inhibit via GNOME SessionManager over DBus (what
+        // the Caffeine extension does under the hood), so it works without
+        // any plugin. On = idle-suspend + screen blank inhibited.
+        let cafOn = this._isCaffeineActive();
+        row2.add_child(mkTile('weather-clear-night-symbolic', 'Caffeine',
+            cafOn ? 'On' : 'Off', cafOn, () => {
+                this._toggleCaffeine();
+                this._renderActiveTab();
+            }));
+
+        // Filler tile keeps the grid rectangular (no action, dimmed).
+        row2.add_child(new St.BoxLayout({
+            style_class: 'nook-tile nook-tile-filler',
+            vertical: true, x_expand: true }));
+
+        let grid = new St.BoxLayout({
+            style_class: 'nook-toggle-grid', vertical: true, x_expand: true });
+        grid.add_child(row1);
+        grid.add_child(row2);
 
         // Two-column lower area: the left column stacks DEVICES over WIFI so
         // together they fill the right column's height (toggle cluster + TOP
@@ -2693,29 +2710,68 @@ export const NotchNux = GObject.registerClass({
             leftCol.add_child(wifiCard);
 
         let rightCol = new St.BoxLayout({ style_class: 'nook-tray-rightcol', vertical: true });
-        rightCol.add_child(cluster);
-
-        // Mirrored top-bar indicators (extensions + system status area).
-        // Non-destructive: the real panel keeps its actors; we render a row of
-        // icons that mirror Main.panel.statusArea and open each indicator's own
-        // menu when clicked. Lets the notch stand in for the (often hidden) bar.
-        if (this._config.isFeatureEnabled('mirrorTray')) {
-            let tray = this._buildTrayMirror();
-            if (tray) {
-                tray.add_style_class_name('nook-tray-mirror-beside');
-                // Grow to fill the space left under the cluster so its height
-                // matches the WiFi card beside it instead of hugging one icon row.
-                tray.y_expand = true;
-                tray.y_align = Clutter.ActorAlign.FILL;
-                rightCol.add_child(tray);
-            }
-        }
+        rightCol.add_child(grid);
 
         lower.add_child(leftCol);
         lower.add_child(rightCol);
         panel.add_child(lower);
 
         this._contentContainer.add_child(panel);
+    }
+
+    // Caffeine — native screen/suspend inhibit via GNOME SessionManager over
+    // DBus (the same mechanism the Caffeine extension drives), so the toggle
+    // needs no plugin. Active state is tracked by the inhibit cookie; a shell
+    // restart drops it (inhibit ends), which matches "Off" after reload.
+    _isCaffeineActive() {
+        return this._caffeineCookie !== null && this._caffeineCookie !== undefined;
+    }
+
+    _toggleCaffeine() {
+        if (this._isCaffeineActive())
+            this._sessionUninhibit();
+        else
+            this._sessionInhibit();
+    }
+
+    _sessionInhibit() {
+        // Flags 12 = InhibitSuspend(4) + InhibitIdle(8): keep the screen on
+        // and suspend off while active.
+        try {
+            Gio.DBus.session.call('org.gnome.SessionManager',
+                '/org/gnome/SessionManager',
+                'org.gnome.SessionManager', 'Inhibit',
+                new GLib.Variant('(susu)', ['NotchNux', 0, 'Caffeine toggle', 12]),
+                null, Gio.DBusCallFlags.NONE, -1, null, (bus, result) => {
+                    try {
+                        let [cookie] = Gio.DBus.session.call_finish(result).deepUnpack();
+                        this._caffeineCookie = cookie;
+                        if (this.isExpanded && this._activeTab === 'system')
+                            this._renderActiveTab();
+                    } catch (e) {
+                        console.error('NotchNux: caffeine inhibit failed', e);
+                    }
+                });
+        } catch (e) {
+            console.error('NotchNux: caffeine inhibit error', e);
+        }
+    }
+
+    _sessionUninhibit() {
+        if (this._caffeineCookie == null) return;
+        let cookie = this._caffeineCookie;
+        this._caffeineCookie = null;
+        try {
+            Gio.DBus.session.call('org.gnome.SessionManager',
+                '/org/gnome/SessionManager',
+                'org.gnome.SessionManager', 'Uninhibit',
+                new GLib.Variant('(u)', [cookie]),
+                null, Gio.DBusCallFlags.NONE, -1, null, null);
+        } catch (e) {
+            console.error('NotchNux: caffeine uninhibit error', e);
+        }
+        if (this.isExpanded && this._activeTab === 'system')
+            this._renderActiveTab();
     }
 
     // A muted "+N more…" row that reveals the full list in an overlay. Used to

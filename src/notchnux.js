@@ -528,7 +528,7 @@ export const NotchNux = GObject.registerClass({
         let targetX = monitor.x + Math.floor((monitor.width - DASHBOARD_WIDTH) / 2);
         this.ease({
             x: targetX, y: monitor.y, width: DASHBOARD_WIDTH, height: targetHeight,
-            duration: 220, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            duration: 300, mode: Clutter.AnimationMode.EASE_OUT_EXPO });
     }
 
     // True if `actor` is this widget or any descendant.
@@ -769,14 +769,19 @@ export const NotchNux = GObject.registerClass({
             this._activateCurrentNotification();
         });
 
-        // Hovering anywhere on the banner pauses the auto-dismiss; leaving
-        // restarts it. Bound on the outer box so the actions row counts too.
+        // Hovering anywhere on the banner pauses the auto-dismiss AND expands
+        // the text to full (no ellipsis) so it's readable; leaving folds the
+        // text back and restarts the countdown.
         this._notifBanner.connect('enter-event', () => {
             this._clearPeekDismissTimer();
+            this._setPeekFullText(true);
             return Clutter.EVENT_PROPAGATE;
         });
         this._notifBanner.connect('leave-event', () => {
-            if (this._peekActive) this._armPeekDismissTimer();
+            if (this._peekActive) {
+                this._setPeekFullText(false);
+                this._armPeekDismissTimer();
+            }
             return Clutter.EVENT_PROPAGATE;
         });
     }
@@ -1623,7 +1628,7 @@ export const NotchNux = GObject.registerClass({
             this._tabButtons[this._activeTab].set_style(this._accentTabActiveStyle ?? null);
         }
         this._scrollActiveTabIntoView();
-        this._renderActiveTab();
+        this._renderActiveTab(true);
     }
 
     _switchTabRelative(delta) {
@@ -1681,7 +1686,7 @@ export const NotchNux = GObject.registerClass({
         });
     }
 
-    _renderActiveTab() {
+    _renderActiveTab(fade = false) {
         // Stop any running Cairo-widget animations before their actors are
         // destroyed — EqBars in particular drives GLib timers that would
         // otherwise fire into freed actors.
@@ -1693,21 +1698,42 @@ export const NotchNux = GObject.registerClass({
         // Close any open WiFi/Bluetooth scan overlay before its actors (and the
         // tab content it floats over) are freed; also stops discovery/timers.
         this._closeScanOverlay();
-        this._contentContainer.destroy_all_children();
-        switch (this._activeTab) {
-            case 'media': this._renderMediaTab(); break;
-            case 'system': this._renderSystemTab(); break;
-            case 'weather': this._renderWeatherTab(); break;
-            case 'studio': this._renderStudioTab(); break;
-            case 'calendar': this._renderCalendarTab(); break;
-            case 'notifications': this._renderNotificationsTab(); break;
-            case 'shelf': this._renderShelfTab(); break;
-            case 'wallpaper': this._renderWallpaperTab(); break;
+        const renderNow = () => {
+            this._contentContainer.destroy_all_children();
+            switch (this._activeTab) {
+                case 'media': this._renderMediaTab(); break;
+                case 'system': this._renderSystemTab(); break;
+                case 'weather': this._renderWeatherTab(); break;
+                case 'studio': this._renderStudioTab(); break;
+                case 'calendar': this._renderCalendarTab(); break;
+                case 'notifications': this._renderNotificationsTab(); break;
+                case 'shelf': this._renderShelfTab(); break;
+                case 'wallpaper': this._renderWallpaperTab(); break;
+            }
+            // Re-fit to the new content height, unless expand() is driving its
+            // own open animation (it renders first, then animates size itself).
+            if (this.isExpanded && !this._isExpanding)
+                this._resizeToContent();
+            // Bring the fresh content back in — paired with the quick fade-out
+            // below this turns the hard content swap into a soft crossfade, so
+            // a tab switch reads as one motion with the resize instead of an
+            // instant swap followed by a jump.
+            this._contentContainer.ease({
+                opacity: 255, duration: 170,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+        };
+        // Crossfade path: fade the outgoing tab out quickly, then swap and
+        // fade the new one in. Only used for interactive tab switches — other
+        // callers (config reload, expand) render immediately.
+        if (fade && this.isExpanded && !this._isExpanding &&
+            this._contentContainer.get_children().length > 0) {
+            this._contentContainer.ease({
+                opacity: 0, duration: 90,
+                mode: Clutter.AnimationMode.EASE_IN_QUAD,
+                onComplete: () => renderNow() });
+        } else {
+            renderNow();
         }
-        // Re-fit to the new content height, unless expand() is driving its own
-        // open animation (it renders first, then animates size itself).
-        if (this.isExpanded && !this._isExpanding)
-            this._resizeToContent();
     }
 
     // Halt vinyl spin + EQ bounce and drop the references, so nothing keeps
@@ -4619,11 +4645,11 @@ export const NotchNux = GObject.registerClass({
 
         let meta = this._notifStyle(fullTitle);
         let cls = 'nook-alert-card' + (meta.accent ? ' nook-alert-accent' : '') + (hasMore ? ' nook-alert-expandable' : '');
-        // Use a button when expandable so it's focusable/clickable; a plain box
-        // otherwise (keeps non-interactive cards out of the focus chain).
-        let card = hasMore
-            ? new St.Button({ style_class: cls, x_expand: true, reactive: true, can_focus: true })
-            : new St.BoxLayout({ style_class: cls, vertical: false, x_expand: true });
+        // Every card is a button now: clicking it activates the underlying
+        // notification (same path the peek banner uses — opens the app).
+        // Cards whose text was truncated keep a separate chevron button for
+        // expand/collapse, so the text toggle doesn't eat the activation click.
+        let card = new St.Button({ style_class: cls, x_expand: true, reactive: true, can_focus: true });
         // Accented cards follow the user accent instead of the CSS blue.
         if (meta.accent) {
             let accRgb = accentRgbStr();
@@ -4631,8 +4657,7 @@ export const NotchNux = GObject.registerClass({
         }
 
         let inner = new St.BoxLayout({ vertical: false, x_expand: true });
-        if (hasMore)
-            card.set_child(inner);
+        card.set_child(inner);
 
         let badge = new St.Bin({ style_class: 'nook-alert-badge', y_align: Clutter.ActorAlign.START });
         badge.set_child(new St.Icon({ icon_name: meta.icon, icon_size: 18 }));
@@ -4644,10 +4669,23 @@ export const NotchNux = GObject.registerClass({
         let titleLabel = new St.Label({ style_class: 'nook-alert-title', x_expand: true, y_align: Clutter.ActorAlign.CENTER });
         titleRow.add_child(titleLabel);
         // Expand/collapse chevron, only on cards that have more to reveal.
+        // It's its own button so a click on it toggles the text instead of
+        // activating the notification (nested buttons: the topmost wins).
         let chevron = null;
         if (hasMore) {
+            let chevBtn = new St.Button({
+                style_class: 'nook-alert-chevron-btn',
+                reactive: true,
+                y_align: Clutter.ActorAlign.CENTER });
             chevron = new St.Icon({ icon_name: 'pan-end-symbolic', style_class: 'nook-alert-chevron', icon_size: 12, y_align: Clutter.ActorAlign.CENTER });
-            titleRow.add_child(chevron);
+            chevBtn.set_child(chevron);
+            titleRow.add_child(chevBtn);
+            chevBtn.connect('clicked', () => {
+                expanded = !expanded;
+                apply();
+                if (this.isExpanded && !this._isExpanding)
+                    this._resizeToContent();
+            });
         }
         txt.add_child(titleRow);
         let bodyLabel = null;
@@ -4659,8 +4697,6 @@ export const NotchNux = GObject.registerClass({
             txt.add_child(bodyLabel);
         }
         inner.add_child(txt);
-        if (!hasMore)
-            card.add_child(inner);
 
         let expanded = false;
         let apply = () => {
@@ -4680,15 +4716,34 @@ export const NotchNux = GObject.registerClass({
         };
         apply();
 
-        if (hasMore) {
-            card.connect('clicked', () => {
+        // Clicking the card body activates the notification (opens the app),
+        // mirroring the peek banner. If the notification can't be activated
+        // (transient/scraped), fall back to toggling the truncated text.
+        card.connect('clicked', () => {
+            let activated = false;
+            let n = m.notification;
+            try {
+                if (n && typeof n.activate === 'function') {
+                    n.activate();
+                    activated = true;
+                } else if (m.source && typeof m.source.activate === 'function') {
+                    m.source.activate();
+                    activated = true;
+                }
+            } catch (e) {
+                console.error('NotchNux: notification activate failed', e);
+            }
+            if (activated) {
+                // The notification is handled — refresh the list so it moves
+                // out of the unread queue.
+                this._renderActiveTab();
+            } else if (hasMore) {
                 expanded = !expanded;
                 apply();
-                // Card grew/shrank — refit the dashboard to the new height.
                 if (this.isExpanded && !this._isExpanding)
                     this._resizeToContent();
-            });
-        }
+            }
+        });
         return card;
     }
 
@@ -4934,7 +4989,23 @@ export const NotchNux = GObject.registerClass({
         let targetX = monitor.x + Math.floor((monitor.width - PEEK_WIDTH) / 2);
         this.ease({
             x: targetX, width: PEEK_WIDTH, height: targetHeight,
-            duration: 180, mode: Clutter.AnimationMode.EASE_OUT_QUAD });
+            duration: 260, mode: Clutter.AnimationMode.EASE_OUT_EXPO });
+    }
+
+    // Hover reveal: while the pointer is on the banner, unwrap the title/body
+    // so nothing is cut off by the ellipsis, and grow the banner to the new
+    // natural height. On leave, fold back to the compact ellipsized card.
+    // (The dismiss timer is managed by the banner's enter/leave handlers.)
+    _setPeekFullText(on) {
+        if (!this._notifBanner || !this._notifBanner.visible) return;
+        if (this._peekFullText === on) return;
+        this._peekFullText = on;
+        for (let label of [this._notifPeekTitle, this._notifPeekBody]) {
+            label.clutter_text.line_wrap = on;
+            label.clutter_text.ellipsize =
+                on ? Pango.EllipsizeMode.NONE : Pango.EllipsizeMode.END;
+        }
+        this._resizePeekToContent();
     }
 
     // Collapse the banner back to the pill. `immediate` skips the timer clear
@@ -4943,6 +5014,15 @@ export const NotchNux = GObject.registerClass({
         if (!this._peekActive) return;
         this._peekActive = false;
         this._peekNotification = null;
+        // Fold the hover-expanded text back to compact so the next peek starts
+        // small (the leave-event may not have run if we hid under the pointer).
+        this._peekFullText = false;
+        if (this._notifPeekTitle && this._notifPeekBody) {
+            this._notifPeekTitle.clutter_text.line_wrap = false;
+            this._notifPeekTitle.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+            this._notifPeekBody.clutter_text.line_wrap = false;
+            this._notifPeekBody.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        }
         this._clearPeekDismissTimer();
 
         // If the full dashboard is being opened (click handoff), don't animate
@@ -5068,7 +5148,11 @@ export const NotchNux = GObject.registerClass({
                     if (n?.acknowledged) continue;
                     out.push({
                         title: (n.title || source.title || 'Notification').toString(),
-                        body: (n.body || '').toString()
+                        body: (n.body || '').toString(),
+                        // Keep the live Message object around so alert cards can
+                        // activate it on click (same path the peek banner uses).
+                        notification: n,
+                        source: source
                     });
                 }
             }
@@ -5091,7 +5175,9 @@ export const NotchNux = GObject.registerClass({
                 let title = actor?.notification?.title ?? actor?._notification?.title ?? actor?.title;
                 if (typeof title === 'string' && title.length) {
                     let body = actor?.notification?.body ?? actor?._notification?.body ?? '';
-                    out.push({ title, body: (body || '').toString() });
+                    out.push({ title, body: (body || '').toString(),
+                               notification: actor?.notification ?? actor?._notification ?? null,
+                               source: null });
                     continue; // don't descend into a matched message
                 }
                 let kids = actor?.get_children ? actor.get_children() : [];
@@ -5715,15 +5801,21 @@ export const NotchNux = GObject.registerClass({
         // measure the freshly-rendered tab to get its natural height.
         this.set_width(DASHBOARD_WIDTH);
         let targetHeight = this._measureDashboardHeight();
+        // Measure at the final width, then restore the pill's real width so
+        // the ease below starts from the pill. Without this, the width jumps
+        // to the dashboard width in a single frame before the animation even
+        // starts — the hard "pop" that read as janky opening.
+        this.set_width(this._pillWidth());
 
         // The whole open is one motion at one duration and one curve. Everything
         // (the box growing, the surface unfolding, the content fading in) shares
-        // EASE_OUT_QUINT so nothing arrives early or fights another timeline —
-        // that mismatch is what read as "not smooth". No BACK/overshoot, no
-        // opacity dip on the surface: it stays fully opaque and simply grows
-        // from the top-center pivot where the pill sits.
-        const DURATION = 340;
-        const CURVE = Clutter.AnimationMode.EASE_OUT_QUINT;
+        // EASE_OUT_EXPO so nothing arrives early or fights another timeline —
+        // that mismatch is what read as "not smooth". EXPO's fast attack with a
+        // long settle is what gives Apple's sheet presentations their feel.
+        // No BACK/overshoot, no opacity dip on the surface: it stays fully
+        // opaque and simply grows from the top-center pivot where the pill sits.
+        const DURATION = 420;
+        const CURVE = Clutter.AnimationMode.EASE_OUT_EXPO;
 
         // Deepen the backdrop blur toward the expanded strength alongside the
         // unfold (no-op when blur is disabled).

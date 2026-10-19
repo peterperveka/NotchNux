@@ -1561,6 +1561,16 @@
     margin-left: 6px;
 }
 
+/* The chevron's clickable wrapper — small, transparent, so it doesn't read
+   as a button but still catches its own clicks apart from card activation. */
+.nook-alert-chevron-btn {
+    padding: 2px 4px;
+    border-radius: 8px;
+}
+.nook-alert-chevron-btn:hover .nook-alert-chevron {
+    color: rgba(255, 255, 255, 0.75);
+}
+
 .nook-alert-accent {
     background-color: rgba(122, 162, 255, 0.1);
     border: 1px solid rgba(122, 162, 255, 0.28);
